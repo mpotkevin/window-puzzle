@@ -34,10 +34,11 @@
     <span id="toast-text">提示訊息</span>
   </div>
 
-  <div class="max-w-7xl mx-auto w-full flex-1 flex flex-col lg:flex-row gap-6">
+  <!-- 寬度足夠時（md 平板/中型螢幕以上），自動將參數調整面板排在左側，A4 預覽在右側 -->
+  <div class="max-w-7xl mx-auto w-full flex-1 flex flex-col md:flex-row gap-6">
     
     <!-- 左側：控制面板 -->
-    <aside class="w-full lg:w-[380px] flex flex-col gap-6 shrink-0">
+    <aside class="w-full md:w-[320px] lg:w-[380px] flex flex-col gap-6 shrink-0">
       
       <!-- 主選單：標題與基本說明 -->
       <div class="bg-white p-5 rounded-3xl shadow-md border border-slate-200">
@@ -46,7 +47,7 @@
           <h1 class="text-lg font-bold text-slate-800">PnP 幾何窗口拼圖產生器</h1>
         </div>
         <p class="text-xs text-slate-500 leading-relaxed">
-          這是一款符合 A4 印刷標準的益智手工桌遊設計工具。您可以在上方彩色底座自由配置底色塊與窗口位置，列印成品與設計畫面將絕對對應。
+          這是一款符合 A4 印刷標準的益智手工桌遊設計工具，請將下面裁切的方形拼圖對上正確的位置。
         </p>
 
         <!-- 編輯模式切換 Tab (先底板色塊，再裁剪窗口) -->
@@ -102,7 +103,7 @@
 
     <!-- 右側：A4 格式預覽區 -->
     <section class="flex-1 flex flex-col items-center">
-      <div class="mb-3 flex items-center gap-1.5 self-start lg:self-center text-xs font-semibold text-slate-500">
+      <div class="mb-3 flex items-center gap-1.5 self-start md:self-center text-xs font-semibold text-slate-500">
         <span class="inline-block w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse"></span>
         <span id="preview-status-text">A4 實體列印排版預覽 (當前正編輯底座彩色色塊)</span>
       </div>
@@ -115,20 +116,20 @@
           <h2 class="text-xl font-black text-slate-900 tracking-tight">🧩 PnP 幾何窗口益智拼圖桌遊 (印出即玩)</h2>
         </div>
 
-        <!-- 彩色底板主要編輯區域 (620x600 比例) -->
-        <div id="a4-plate" class="absolute bg-white border border-slate-200 select-none overflow-hidden" style="left: 90px; top: 80px; width: 620px; height: 600px;">
+        <!-- 彩色底板主要編輯區域 (620x600 比例) - style 會由 JS 動態比例縮放更新，避免溢出 -->
+        <div id="a4-plate" class="absolute bg-white border border-slate-200 select-none overflow-hidden">
           <!-- 色塊與視窗將在此處動態渲染 -->
         </div>
 
         <!-- 中間的 A4 裁剪引導虛線 (精確移動至 705 處，絕對不重疊 600px 高的底座圖案) -->
-        <div id="a4-divider" class="absolute left-0 right-0 border-t-2 border-dashed border-slate-400 flex items-center px-8" style="top: 705px; height: 1px;">
+        <div id="a4-divider" class="absolute left-0 right-0 border-t-2 border-dashed border-slate-400 flex items-center px-8" style="height: 1px;">
           <span id="a4-divider-text" class="bg-white px-2 text-slate-500 font-bold select-none pointer-events-none origin-left">
             ✂️ 請沿這條虛線剪開：分出「上方底板」與「下方拼圖卡」
           </span>
         </div>
 
         <!-- 下方：8 塊即時裁剪拼圖卡本體 (無黑字遮擋、100% 完整色塊) -->
-        <div id="a4-cards-container" class="absolute" style="left: 90px; top: 730px; width: 620px; height: 400px;">
+        <div id="a4-cards-container" class="absolute">
           <!-- 拼圖卡在此動態生成 -->
         </div>
 
@@ -281,6 +282,28 @@
         document.getElementById('a4-divider-text').style.transform = `scale(${displayScale}) translateY(-50%)`;
         document.getElementById('a4-divider-text').style.fontSize = `9px`;
         
+        // 修正預覽位置跑掉、溢出與裁切問題：動態依比例縮放底層主要外框尺寸
+        const plate = document.getElementById('a4-plate');
+        if (plate) {
+          plate.style.left = `${PLATE_X * displayScale}px`;
+          plate.style.top = `${PLATE_Y * displayScale}px`;
+          plate.style.width = `${PLATE_WIDTH_ON_A4 * displayScale}px`;
+          plate.style.height = `${PLATE_HEIGHT_ON_A4 * displayScale}px`;
+        }
+
+        const divider = document.getElementById('a4-divider');
+        if (divider) {
+          divider.style.top = `${705 * displayScale}px`;
+        }
+
+        const cardsContainer = document.getElementById('a4-cards-container');
+        if (cardsContainer) {
+          cardsContainer.style.left = `${START_X * displayScale}px`;
+          cardsContainer.style.top = `${START_Y * displayScale}px`;
+          cardsContainer.style.width = `${(A4_WIDTH - START_X * 2) * displayScale}px`;
+          cardsContainer.style.height = `${400 * displayScale}px`;
+        }
+        
         render();
       }
     }
@@ -415,7 +438,7 @@
       window.addEventListener('touchend', handleEnd);
     }
 
-    // 隨機窗口位置演算法
+    // 隨機窗口位置演算法 (防重疊且隨機感豐富)
     function randomizeLayout() {
       const cells = [];
       const cols = [40, 265, 490, 715];
@@ -663,7 +686,7 @@
 
       plate.innerHTML = plateHTML;
 
-      // 3. 渲染下方的 8 塊即時同步拼圖小卡 (完全乾淨，沒有黑標籤覆蓋蓋住圖案)
+      // 3. 渲染下方的 8 塊即時同步拼圖小卡 (完全乾淨，沒有黑標籤覆蓋)
       let cardsHTML = '';
       state.windows.forEach((win, idx) => {
         const cardCoords = getCardCoords(idx, win.size);
@@ -739,7 +762,7 @@
               <div>
                 <div class="flex justify-between text-xs text-slate-500 mb-1">
                   <span>單獨：縱向位置 (Y)</span>
-                  <span className="font-mono font-bold text-slate-700">${selectedWin.y} px</span>
+                  <span class="font-mono font-bold text-slate-700">${selectedWin.y} px</span>
                 </div>
                 <input type="range" min="0" max="${INTERNAL_BASE_SIZE - selectedWin.size}" value="${selectedWin.y}" oninput="updateSingleItem('windows', ${selectedWin.id}, {y: parseInt(this.value)})" class="w-full accent-indigo-600" />
               </div>
