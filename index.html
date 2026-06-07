@@ -1,263 +1,434 @@
-import React, { useState, useEffect, useRef } from 'react';
-
-// 虛擬 A4 畫布座標系統 (符合 210:297 比例)
-const A4_WIDTH = 800;
-const A4_HEIGHT = 1130;
-
-// 內部彩色底板大小定義 (符合 950x950 座標系)
-const INTERNAL_BASE_SIZE = 950;
-
-// A4 頁面中，彩色底板的擺放參數 (已依要求修改為寬 620, 高 600，更善用空間)
-const PLATE_WIDTH_ON_A4 = 620; 
-const PLATE_HEIGHT_ON_A4 = 600; 
-const PLATE_X = (A4_WIDTH - PLATE_WIDTH_ON_A4) / 2; // 置中：(800 - 620) / 2 = 90
-const PLATE_Y = 80; // 頂部預留適當的安全邊距
-
-// 雙向獨立橫縱縮放係數，確保完美自適應拉伸
-const plateToA4ScaleX = PLATE_WIDTH_ON_A4 / INTERNAL_BASE_SIZE; // 620/950 = 0.6526
-const plateToA4ScaleY = PLATE_HEIGHT_ON_A4 / INTERNAL_BASE_SIZE; // 600/950 = 0.6315
-
-// A4 頁面中，8塊拼圖卡的排版邊界與網格配置 (配合大底板往下安全定位)
-const START_X = 90; 
-const START_Y = 730; 
-
-// 三種經典主題色配置
-const THEMES = {
-  spring: {
-    name: '🎨 暖陽春日 (Pastel)',
-    colors: ['#ff69b4', '#ffd700', '#ff8da1', '#ffa500', '#1e90ff', '#ffb703', '#adff2f', '#ffc0cb', '#8ecae6']
-  },
-  retro: {
-    name: '📻 復古摩登 (Retro)',
-    colors: ['#e07a5f', '#f4f1de', '#3d405b', '#81b29a', '#f2cc8f', '#1d3557', '#457b9d', '#a8dadc', '#e63946']
-  },
-  neon: {
-    name: '⚡ 塞博霓虹 (Cyber)',
-    colors: ['#ff007f', '#00ffff', '#7b2cbf', '#390099', '#ff5400', '#00f5d4', '#00bbf9', '#fee440', '#f15bb5']
-  }
-};
-
-// A4 紙張等比例置中定位演算法 (修復 PDF 下載不可或缺的核心函數)
-function calculateA4Position(targetWidth, targetHeight, orientation = 'p', margin = 10) {
-  const isLand = orientation === 'l';
-  const pageWidth = isLand ? 297 : 210;
-  const pageHeight = isLand ? 210 : 297;
-  const contentWidth = pageWidth - margin * 2;
-  const contentHeight = pageHeight - margin * 2;
-  const ratio = targetWidth / targetHeight;
-  let drawW, drawH;
-
-  if (ratio > contentWidth / contentHeight) {
-    drawW = contentWidth;
-    drawH = contentWidth / ratio;
-  } else {
-    drawH = contentHeight;
-    drawW = drawH * ratio;
-  }
-  return {
-    x: (pageWidth - drawW) / 2,
-    y: (pageHeight - drawH) / 2,
-    width: drawW,
-    height: drawH,
-  };
-}
-
-export default function App() {
-  // 優先進入底層色塊編輯模式：'blocks' (編輯底座彩色大正方形) 或是 'windows' (編輯挖空窗口)
-  const [editMode, setEditMode] = useState('blocks');
-
-  // 1. 鏤空窗口數據：8 個可操作方塊 (初始 size 設定為 180px，且座標經精密計算完全不重疊)
-  const [windows, setWindows] = useState([
-    { id: 1, x: 60, y: 60, size: 180 },
-    { id: 2, x: 380, y: 60, size: 180 },
-    { id: 3, x: 700, y: 60, size: 180 },
-    { id: 4, x: 60, y: 380, size: 180 },
-    { id: 5, x: 380, y: 380, size: 180 },
-    { id: 6, x: 700, y: 380, size: 180 },
-    { id: 7, x: 220, y: 700, size: 180 },
-    { id: 8, x: 540, y: 700, size: 180 },
-  ]);
-
-  // 2. 彩色大正方形底座色塊數據（6 塊，初始座標完美居於 950x950 內不超界，zIndex 分別為 1-6）
-  const [blocks, setBlocks] = useState([
-    { id: 1, colorIndex: 0, x: 400, y: 50, size: 300, zIndex: 1 },
-    { id: 2, colorIndex: 1, x: 200, y: 80, size: 250, zIndex: 2 },
-    { id: 3, colorIndex: 2, x: 50, y: 200, size: 300, zIndex: 3 },
-    { id: 4, colorIndex: 3, x: 450, y: 350, size: 280, zIndex: 4 },
-    { id: 5, colorIndex: 4, x: 100, y: 450, size: 320, zIndex: 5 },
-    { id: 6, colorIndex: 5, x: 420, y: 500, size: 280, zIndex: 6 },
-  ]);
-
-  // 玩家自訂 6 色狀態
-  const [customColors, setCustomColors] = useState([
-    '#e63946', '#f4a261', '#e9c46a', '#2a9d8f', '#264653', '#9b5de5'
-  ]);
-
-  const [currentTheme, setCurrentTheme] = useState('spring');
-  const [selectedWindowId, setSelectedWindowId] = useState(1); // 當前選取的窗口編號
-  const [selectedBlockId, setSelectedBlockId] = useState(1);   // 當前選取的彩色方塊編號
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PnP 幾何窗口益智桌遊產生器 - 職能治療師鄭凱文設計</title>
   
-  const [displayScale, setDisplayScale] = useState(1);
-  const [pdfLibLoaded, setPdfLibLoaded] = useState(false);
-  const [notification, setNotification] = useState(null);
+  <!-- 引入 Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- 引入 Lucide 圖標庫 -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- 引入 jsPDF 印刷導出核心 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
-  const containerRef = useRef(null);
-  const rAFRef = useRef(null);
-
-  // 動態載入 jsPDF
-  useEffect(() => {
-    const loadJsPDF = () => {
-      if (window.jspdf) {
-        setPdfLibLoaded(true);
-        return;
-      }
-      const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-      script.async = true;
-      script.onload = () => setPdfLibLoaded(true);
-      script.onerror = () => showToast('PDF 匯出模組載入失敗，請檢查網路連線', 'error');
-      document.head.appendChild(script);
-    };
-    loadJsPDF();
-  }, []);
-
-  // 監聽並計算 RWD A4 紙張的網頁縮放比例
-  useEffect(() => {
-    const updateSize = () => {
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        setDisplayScale(rect.width / A4_WIDTH);
-      }
-    };
-    window.addEventListener('resize', updateSize);
-    updateSize();
-    const timer = setTimeout(updateSize, 150);
-
-    return () => {
-      window.removeEventListener('resize', updateSize);
-      clearTimeout(timer);
-      if (rAFRef.current) cancelAnimationFrame(rAFRef.current);
-    };
-  }, []);
-
-  const showToast = (message, type = 'info') => {
-    setNotification({ message, type });
-    setTimeout(() => setNotification(null), 3000);
-  };
-
-  // 取得主題色彩 (支援自訂色彩讀取)
-  const getThemeColor = (index) => {
-    if (currentTheme === 'custom') {
-      return customColors[index % customColors.length];
+  <style>
+    /* 避免滑動時選擇到文字或元件 */
+    .select-none {
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      user-select: none;
     }
-    const theme = THEMES[currentTheme] || THEMES.spring;
-    return theme.colors[index % theme.colors.length];
-  };
+    input[type="range"] {
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-100 flex flex-col p-4 md:p-6 font-sans select-none overflow-x-hidden">
 
-  // 調整大色塊先後層級：往上移一層 (與相鄰的上層色塊互換 zIndex)
-  const moveLayerUp = (id) => {
-    setBlocks((prev) => {
-      const currentBlock = prev.find((b) => b.id === id);
-      if (!currentBlock) return prev;
-      
-      const higherBlocks = prev.filter((b) => b.zIndex > currentBlock.zIndex);
-      if (higherBlocks.length === 0) {
-        showToast(`色塊 ${id} 已經是最上層囉！`, 'info');
-        return prev;
-      }
-      
-      higherBlocks.sort((a, b) => a.zIndex - b.zIndex);
-      const targetBlock = higherBlocks[0];
-      
-      const currentZ = currentBlock.zIndex;
-      const targetZ = targetBlock.zIndex;
-      
-      showToast(`色塊 ${id} 已往上移了一層！`, 'success');
-      return prev.map((b) => {
-        if (b.id === id) return { ...b, zIndex: targetZ };
-        if (b.id === targetBlock.id) return { ...b, zIndex: currentZ };
-        return b;
-      });
-    });
-  };
+  <!-- 獨立 Toast 訊息提示元件 -->
+  <div id="toast" class="fixed top-6 right-6 z-[9999] px-6 py-4 rounded-2xl shadow-xl border text-sm font-semibold transition-all transform translate-y-[-100px] opacity-0 pointer-events-none flex items-center gap-3">
+    <span id="toast-icon">ℹ️</span>
+    <span id="toast-text">提示訊息</span>
+  </div>
 
-  // 調整大色塊先後層級：往下移一層 (與相鄰的下層色塊互換 zIndex)
-  const moveLayerDown = (id) => {
-    setBlocks((prev) => {
-      const currentBlock = prev.find((b) => b.id === id);
-      if (!currentBlock) return prev;
-      
-      const lowerBlocks = prev.filter((b) => b.zIndex < currentBlock.zIndex);
-      if (lowerBlocks.length === 0) {
-        showToast(`色塊 ${id} 已經是最底層囉！`, 'info');
-        return prev;
-      }
-      
-      lowerBlocks.sort((a, b) => b.zIndex - a.zIndex);
-      const targetBlock = lowerBlocks[0];
-      
-      const currentZ = currentBlock.zIndex;
-      const targetZ = targetBlock.zIndex;
-      
-      showToast(`色塊 ${id} 已往下移了一層！`, 'success');
-      return prev.map((b) => {
-        if (b.id === id) return { ...b, zIndex: targetZ };
-        if (b.id === targetBlock.id) return { ...b, zIndex: currentZ };
-        return b;
-      });
-    });
-  };
-
-  // 同步調整 8 個窗口的尺寸，並做邊界防護 (初始為 180px)
-  const handleResizeAll = (newSize) => {
-    setWindows((prev) =>
-      prev.map((win) => {
-        const updates = { size: newSize };
-        if (win.x + newSize > INTERNAL_BASE_SIZE) {
-          updates.x = INTERNAL_BASE_SIZE - newSize;
-        }
-        if (win.y + newSize > INTERNAL_BASE_SIZE) {
-          updates.y = INTERNAL_BASE_SIZE - newSize;
-        }
-        return { ...win, ...updates };
-      })
-    );
-  };
-
-  // 節流更新機制
-  const handleUpdateThrottled = (target, id, data) => {
-    if (rAFRef.current) cancelAnimationFrame(rAFRef.current);
+  <div class="max-w-7xl mx-auto w-full flex-1 flex flex-col lg:flex-row gap-6">
     
-    rAFRef.current = requestAnimationFrame(() => {
-      if (target === 'windows') {
-        setWindows((prev) =>
-          prev.map((win) => (win.id === id ? { ...win, ...data } : win))
-        );
-      } else {
-        setBlocks((prev) =>
-          prev.map((block) => (block.id === id ? { ...block, ...data } : block))
-        );
-      }
-    });
-  };
+    <!-- 左側：控制面板 -->
+    <aside class="w-full lg:w-[380px] flex flex-col gap-6 shrink-0">
+      
+      <!-- 主選單：標題與基本說明 -->
+      <div class="bg-white p-5 rounded-3xl shadow-md border border-slate-200">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-2xl">🧩</span>
+          <h1 class="text-lg font-bold text-slate-800">PnP 幾何窗口拼圖產生器</h1>
+        </div>
+        <p class="text-xs text-slate-500 leading-relaxed">
+          這是一款符合 A4 印刷標準的益智手工桌遊設計工具。您可以在上方彩色底座自由配置底色塊與窗口位置，列印成品與設計畫面將絕對對應。
+        </p>
 
-  // 隨機分布所有窗口位置 (採用網格洗牌演算法，確保初始或隨機生成均「100% 絕對不重疊」)
-  const randomizeLayout = () => {
-    const cells = [];
-    const cols = [40, 265, 490, 715];
-    const rows = [40, 265, 490, 715];
-    for (let r = 0; r < 4; r++) {
-      for (let c = 0; c < 4; c++) {
-        cells.push({ x: cols[c], y: rows[r] });
+        <!-- 編輯模式切換 Tab (先底板色塊，再裁剪窗口) -->
+        <div class="mt-4 border-t border-slate-100 pt-4">
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">🕹️ 選擇編輯圖層</h3>
+          <div class="flex bg-slate-100 p-1 rounded-xl">
+            <button id="tab-blocks" onclick="setEditMode('blocks')" class="flex-1 py-2.5 rounded-lg text-xs font-bold transition-all bg-white text-indigo-600 shadow-sm">
+              🎨 調整底板色塊 (1-6)
+            </button>
+            <button id="tab-windows" onclick="setEditMode('windows')" class="flex-1 py-2.5 rounded-lg text-xs font-bold transition-all text-slate-500 hover:text-slate-800">
+              ✂️ 調整裁剪窗口 (1-8)
+            </button>
+          </div>
+        </div>
+
+        <div class="mt-4 flex flex-col gap-3">
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">🛠️ 快速操作面板</h3>
+          <div class="grid grid-cols-2 gap-2">
+            <button onclick="randomizeLayout()" class="bg-slate-50 hover:bg-slate-100 border border-slate-200 active:scale-95 text-slate-700 font-semibold py-2.5 px-3 rounded-xl transition-all text-xs flex items-center justify-center gap-1.5">
+              🎲 隨機窗口
+            </button>
+            <button onclick="resetLayout()" class="bg-slate-50 hover:bg-slate-100 border border-slate-200 active:scale-95 text-slate-700 font-semibold py-2.5 px-3 rounded-xl transition-all text-xs flex items-center justify-center gap-1.5">
+              🔄 恢復經典
+            </button>
+          </div>
+          <button onclick="exportToA4PDF()" class="w-full bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold py-3 px-4 rounded-xl shadow-md shadow-indigo-100 transition-all text-xs flex items-center justify-center gap-1.5 mt-1">
+            <i data-lucide="download" class="w-4 h-4"></i> 下載 A4 PDF 印刷檔案
+          </button>
+        </div>
+      </div>
+
+      <!-- 色彩主題更換面板 -->
+      <div class="bg-white p-5 rounded-3xl shadow-md border border-slate-200">
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">🎨 底板色彩主題</h3>
+        <div class="grid grid-cols-2 gap-2" id="theme-buttons-container">
+          <!-- 動態渲染主題按鈕 -->
+        </div>
+
+        <!-- 自訂色彩調整區 -->
+        <div id="custom-colors-panel" class="hidden mt-3 p-3 bg-slate-50 rounded-2xl border border-slate-100 flex flex-col gap-2">
+          <span class="text-[11px] font-bold text-slate-500 block">🎨 自訂 6 塊底板色塊顏色：</span>
+          <div class="grid grid-cols-3 gap-2" id="color-pickers-container">
+            <!-- 動態渲染 6 個色盤 -->
+          </div>
+        </div>
+      </div>
+
+      <!-- 動態微調編輯面板 (視 editMode 而定) -->
+      <div class="bg-white p-5 rounded-3xl shadow-md border border-slate-200" id="controls-panel">
+        <!-- 由 JavaScript 動態填入 -->
+      </div>
+    </aside>
+
+    <!-- 右側：A4 格式預覽區 -->
+    <section class="flex-1 flex flex-col items-center">
+      <div class="mb-3 flex items-center gap-1.5 self-start lg:self-center text-xs font-semibold text-slate-500">
+        <span class="inline-block w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse"></span>
+        <span id="preview-status-text">A4 實體列印排版預覽 (當前正編輯底座彩色色塊)</span>
+      </div>
+
+      <!-- 虛擬 A4 紙張本體 -->
+      <div id="a4-container" class="relative w-full max-w-[640px] bg-white rounded-2xl shadow-xl border border-slate-300 overflow-hidden aspect-[210/297] select-none" style="touch-action: none;">
+        
+        <!-- 頂部標題名稱 -->
+        <div id="a4-header" class="absolute left-0 right-0 p-5 select-none pointer-events-none origin-top-left" style="top: 0; width: 800px;">
+          <h2 class="text-xl font-black text-slate-900 tracking-tight">🧩 PnP 幾何窗口益智拼圖桌遊 (印出即玩)</h2>
+        </div>
+
+        <!-- 彩色底板主要編輯區域 (620x600 比例) -->
+        <div id="a4-plate" class="absolute bg-white border border-slate-200 select-none overflow-hidden" style="left: 90px; top: 80px; width: 620px; height: 600px;">
+          <!-- 色塊與視窗將在此處動態渲染 -->
+        </div>
+
+        <!-- 中間的 A4 裁剪引導虛線 (精確移動至 705 處，絕對不重疊 600px 高的底座圖案) -->
+        <div id="a4-divider" class="absolute left-0 right-0 border-t-2 border-dashed border-slate-400 flex items-center px-8" style="top: 705px; height: 1px;">
+          <span id="a4-divider-text" class="bg-white px-2 text-slate-500 font-bold select-none pointer-events-none origin-left">
+            ✂️ 請沿這條虛線剪開：分出「上方底板」與「下方拼圖卡」
+          </span>
+        </div>
+
+        <!-- 下方：8 塊即時裁剪拼圖卡本體 (無黑字遮擋、100% 完整色塊) -->
+        <div id="a4-cards-container" class="absolute" style="left: 90px; top: 730px; width: 620px; height: 400px;">
+          <!-- 拼圖卡在此動態生成 -->
+        </div>
+
+        <!-- A4 紙本最下方的淺灰色精美設計署名 -->
+        <div id="a4-signature" class="absolute bottom-4 left-0 right-0 text-center text-slate-300 font-bold pointer-events-none select-none origin-bottom">
+          設計：職能治療師 - 鄭凱文
+        </div>
+
+      </div>
+    </section>
+  </div>
+
+  <!-- 網頁最下面的設計師頁尾 -->
+  <footer class="w-full text-center py-6 mt-8 border-t border-slate-200 text-sm text-slate-500">
+    設計：<a href="https://www.facebook.com/mpotkevin" target="_blank" rel="noopener noreferrer" class="text-indigo-600 font-semibold hover:underline">職能治療師 - 鄭凱文</a>
+  </footer>
+
+  <script>
+    // 虛擬 A4 畫布座標系統 (符合 210:297 比例)
+    const A4_WIDTH = 800;
+    const A4_HEIGHT = 1130;
+
+    // 內部彩色底板大小定義 (符合 950x950 座標系)
+    const INTERNAL_BASE_SIZE = 950;
+
+    // A4 頁面中，彩色底板的擺放參數 (寬 620, 高 600)
+    const PLATE_WIDTH_ON_A4 = 620; 
+    const PLATE_HEIGHT_ON_A4 = 600; 
+    const PLATE_X = 90; // 置中：(800 - 620) / 2 = 90
+    const PLATE_Y = 80;
+
+    // 雙向獨立橫縱縮放係數
+    const plateToA4ScaleX = PLATE_WIDTH_ON_A4 / INTERNAL_BASE_SIZE; // 620/950 = 0.6526
+    const plateToA4ScaleY = PLATE_HEIGHT_ON_A4 / INTERNAL_BASE_SIZE; // 600/950 = 0.6315
+
+    // 8塊拼圖卡的排版邊界與網格配置
+    const START_X = 90; 
+    const START_Y = 730; 
+
+    // 三種經典主題色配置
+    const THEMES = {
+      spring: {
+        name: '🎨 暖陽春日 (Pastel)',
+        colors: ['#ff69b4', '#ffd700', '#ff8da1', '#ffa500', '#1e90ff', '#ffb703', '#adff2f', '#ffc0cb', '#8ecae6']
+      },
+      retro: {
+        name: '📻 復古摩登 (Retro)',
+        colors: ['#e07a5f', '#f4f1de', '#3d405b', '#81b29a', '#f2cc8f', '#1d3557', '#457b9d', '#a8dadc', '#e63946']
+      },
+      neon: {
+        name: '⚡ 塞博霓虹 (Cyber)',
+        colors: ['#ff007f', '#00ffff', '#7b2cbf', '#390099', '#ff5400', '#00f5d4', '#00bbf9', '#fee440', '#f15bb5']
+      }
+    };
+
+    // 玩家自訂色彩
+    let customColors = ['#e63946', '#f4a261', '#e9c46a', '#2a9d8f', '#264653', '#9b5de5'];
+
+    // 全域 state
+    let state = {
+      editMode: 'blocks', // 'blocks' 或是 'windows'
+      windows: [
+        { id: 1, x: 60, y: 60, size: 180 },
+        { id: 2, x: 380, y: 60, size: 180 },
+        { id: 3, x: 700, y: 60, size: 180 },
+        { id: 4, x: 60, y: 380, size: 180 },
+        { id: 5, x: 380, y: 380, size: 180 },
+        { id: 6, x: 700, y: 380, size: 180 },
+        { id: 7, x: 220, y: 700, size: 180 },
+        { id: 8, x: 540, y: 700, size: 180 },
+      ],
+      blocks: [
+        { id: 1, colorIndex: 0, x: 400, y: 50, size: 300, zIndex: 1 },
+        { id: 2, colorIndex: 1, x: 200, y: 80, size: 250, zIndex: 2 },
+        { id: 3, colorIndex: 2, x: 50, y: 200, size: 300, zIndex: 3 },
+        { id: 4, colorIndex: 3, x: 450, y: 350, size: 280, zIndex: 4 },
+        { id: 5, colorIndex: 4, x: 100, y: 450, size: 320, zIndex: 5 },
+        { id: 6, colorIndex: 5, x: 420, y: 500, size: 280, zIndex: 6 },
+      ],
+      currentTheme: 'spring',
+      selectedWindowId: 1,
+      selectedBlockId: 1
+    };
+
+    let displayScale = 1;
+    let rAFRef = null;
+
+    // Toast 提示框
+    function showToast(message, type = 'info') {
+      const toast = document.getElementById('toast');
+      const icon = document.getElementById('toast-icon');
+      const text = document.getElementById('toast-text');
+
+      text.innerText = message;
+      if (type === 'success') {
+        icon.innerText = '✨';
+        toast.className = 'fixed top-6 right-6 z-[9999] px-6 py-4 rounded-2xl shadow-xl border text-sm font-semibold transition-all transform duration-300 translate-y-0 opacity-100 bg-emerald-50 border-emerald-100 text-emerald-700 shadow-emerald-100';
+      } else if (type === 'error') {
+        icon.innerText = '❌';
+        toast.className = 'fixed top-6 right-6 z-[9999] px-6 py-4 rounded-2xl shadow-xl border text-sm font-semibold transition-all transform duration-300 translate-y-0 opacity-100 bg-rose-50 border-rose-100 text-rose-700 shadow-rose-100';
+      } else {
+        icon.innerText = 'ℹ️';
+        toast.className = 'fixed top-6 right-6 z-[9999] px-6 py-4 rounded-2xl shadow-xl border text-sm font-semibold transition-all transform duration-300 translate-y-0 opacity-100 bg-indigo-50 border-indigo-100 text-indigo-700 shadow-indigo-100';
+      }
+
+      setTimeout(() => {
+        toast.className = 'fixed top-6 right-6 z-[9999] px-6 py-4 rounded-2xl shadow-xl border text-sm font-semibold transition-all transform duration-300 translate-y-[-100px] opacity-0 pointer-events-none';
+      }, 3000);
+    }
+
+    // 取得當前色彩
+    function getThemeColor(index) {
+      if (state.currentTheme === 'custom') {
+        return customColors[index % customColors.length];
+      }
+      const theme = THEMES[state.currentTheme] || THEMES.spring;
+      return theme.colors[index % theme.colors.length];
+    }
+
+    // 取得拼圖卡網格座標
+    function getCardCoords(index, winSize) {
+      const col = index % 4;
+      const row = Math.floor(index / 4);
+      const cellW = 155; 
+      const cellH = 175; 
+      const cellCenterX = START_X + col * cellW + cellW / 2;
+      const cellCenterY = START_Y + row * cellH + cellH / 2;
+      
+      const cardW = winSize * plateToA4ScaleX;
+      const cardH = winSize * plateToA4ScaleY;
+      
+      return {
+        x: cellCenterX - cardW / 2,
+        y: cellCenterY - cardH / 2,
+        w: cardW,
+        h: cardH
+      };
+    }
+
+    // 調整 RWD 縮放比例
+    function updateDisplayScale() {
+      const container = document.getElementById('a4-container');
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        displayScale = rect.width / A4_WIDTH;
+
+        // 套用 scale 到不需要物理 DOM 移動的 A4 附屬文字/頁首，確保完全按 A4 比例縮放
+        document.getElementById('a4-header').style.transform = `scale(${displayScale})`;
+        document.getElementById('a4-signature').style.transform = `scale(${displayScale})`;
+        document.getElementById('a4-divider-text').style.transform = `scale(${displayScale}) translateY(-50%)`;
+        document.getElementById('a4-divider-text').style.fontSize = `9px`;
+        
+        render();
       }
     }
-    // 洗牌網格位置
-    const shuffled = [...cells].sort(() => Math.random() - 0.5);
 
-    setWindows((prev) =>
-      prev.map((win, index) => {
+    // 切換編輯模式
+    function setEditMode(mode) {
+      state.editMode = mode;
+      const tabBlocks = document.getElementById('tab-blocks');
+      const tabWindows = document.getElementById('tab-windows');
+
+      if (mode === 'blocks') {
+        tabBlocks.className = 'flex-1 py-2.5 rounded-lg text-xs font-bold transition-all bg-white text-indigo-600 shadow-sm';
+        tabWindows.className = 'flex-1 py-2.5 rounded-lg text-xs font-bold transition-all text-slate-500 hover:text-slate-800';
+        document.getElementById('preview-status-text').innerText = 'A4 實體列印排版預覽 (當前正編輯底座彩色色塊)';
+      } else {
+        tabWindows.className = 'flex-1 py-2.5 rounded-lg text-xs font-bold transition-all bg-white text-indigo-600 shadow-sm';
+        tabBlocks.className = 'flex-1 py-2.5 rounded-lg text-xs font-bold transition-all text-slate-500 hover:text-slate-800';
+        document.getElementById('preview-status-text').innerText = 'A4 實體列印排版預覽 (當前正編輯剪裁窗口)';
+      }
+      render();
+    }
+
+    // 同步所有的 8 塊拼圖小卡圖案 (SVG)
+    function renderCardPatternHTML(win) {
+      const sortedBlocks = [...state.blocks].sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
+      let rects = '';
+
+      sortedBlocks.forEach(block => {
+        const hasOverlap =
+          block.x < win.x + win.size &&
+          block.x + block.size > win.x &&
+          block.y < win.y + win.size &&
+          block.y + block.size > win.y;
+
+        if (hasOverlap) {
+          rects += `<rect x="${block.x}" y="${block.y}" width="${block.size}" height="${block.size}" fill="${getThemeColor(block.colorIndex)}" />`;
+        }
+      });
+
+      return `
+        <svg viewBox="${win.x} ${win.y} ${win.size} ${win.size}" preserveAspectRatio="none" class="w-full h-full bg-white">
+          <rect x="${win.x}" y="${win.y}" width="${win.size}" height="${win.size}" fill="#ffffff" />
+          ${rects}
+        </svg>
+      `;
+    }
+
+    // 底板拖曳與縮放核心事件
+    function startDrag(e, item, target) {
+      e.preventDefault();
+      if (target === 'windows') {
+        state.selectedWindowId = item.id;
+      } else {
+        state.selectedBlockId = item.id;
+      }
+
+      const isTouch = e.type.startsWith('touch');
+      const startX = item.x;
+      const startY = item.y;
+      const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+      const clientY = isTouch ? e.touches[0].clientY : e.clientY;
+
+      function handleMove(moveEvent) {
+        const curX = moveEvent.touches ? moveEvent.touches[0].clientX : moveEvent.clientX;
+        const curY = moveEvent.touches ? moveEvent.touches[0].clientY : moveEvent.clientY;
+        const dx = (curX - clientX) / (displayScale * plateToA4ScaleX);
+        const dy = (curY - clientY) / (displayScale * plateToA4ScaleY);
+
+        let newX = Math.max(0, Math.min(INTERNAL_BASE_SIZE - item.size, startX + dx));
+        let newY = Math.max(0, Math.min(INTERNAL_BASE_SIZE - item.size, startY + dy));
+
+        if (rAFRef) cancelAnimationFrame(rAFRef);
+        rAFRef = requestAnimationFrame(() => {
+          item.x = Math.round(newX);
+          item.y = Math.round(newY);
+          render();
+        });
+      }
+
+      function handleEnd() {
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleEnd);
+        window.removeEventListener('touchmove', handleMove);
+        window.removeEventListener('touchend', handleEnd);
+      }
+
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleEnd);
+      window.addEventListener('touchmove', handleMove, { passive: false });
+      window.addEventListener('touchend', handleEnd);
+    }
+
+    function startResize(e, item, target) {
+      e.stopPropagation();
+      e.preventDefault();
+      const isTouch = e.type.startsWith('touch');
+      const startSize = item.size;
+      const startX = item.x;
+      const startY = item.y;
+      const clientX = isTouch ? e.touches[0].clientX : e.clientX;
+
+      function handleMove(moveEvent) {
+        const curX = moveEvent.touches ? moveEvent.touches[0].clientX : moveEvent.clientX;
+        const dx = (curX - clientX) / (displayScale * plateToA4ScaleX);
+
+        let newSize = Math.max(40, Math.min(600, startSize + dx));
+
+        if (startX + newSize > INTERNAL_BASE_SIZE) {
+          newSize = INTERNAL_BASE_SIZE - startX;
+        }
+        if (startY + newSize > INTERNAL_BASE_SIZE) {
+          newSize = INTERNAL_BASE_SIZE - startY;
+        }
+
+        if (rAFRef) cancelAnimationFrame(rAFRef);
+        rAFRef = requestAnimationFrame(() => {
+          item.size = Math.round(newSize);
+          render();
+        });
+      }
+
+      function handleEnd() {
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleEnd);
+        window.removeEventListener('touchmove', handleMove);
+        window.removeEventListener('touchend', handleEnd);
+      }
+
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleEnd);
+      window.addEventListener('touchmove', handleMove, { passive: false });
+      window.addEventListener('touchend', handleEnd);
+    }
+
+    // 隨機窗口位置演算法
+    function randomizeLayout() {
+      const cells = [];
+      const cols = [40, 265, 490, 715];
+      const rows = [40, 265, 490, 715];
+      for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 4; c++) {
+          cells.push({ x: cols[c], y: rows[r] });
+        }
+      }
+      const shuffled = [...cells].sort(() => Math.random() - 0.5);
+
+      state.windows = state.windows.map((win, index) => {
         const cell = shuffled[index];
-        // 加上適度微顫抖 (jitter) 以顯得自然，同時在 grid spacing 安全邊界內避免交疊
         const jitterX = Math.floor(Math.random() * 21) - 10;
         const jitterY = Math.floor(Math.random() * 21) - 10;
         const size = 180;
@@ -267,880 +438,594 @@ export default function App() {
           y: cell.y + jitterY,
           size
         };
-      })
-    );
-    showToast('已隨機生成全新且「絕不重疊」的窗口！🎲', 'success');
-  };
+      });
 
-  // 重設為無重疊經典預設佈局 (初始為 180px)
-  const resetLayout = () => {
-    setWindows([
-      { id: 1, x: 60, y: 60, size: 180 },
-      { id: 2, x: 380, y: 60, size: 180 },
-      { id: 3, x: 700, y: 60, size: 180 },
-      { id: 4, x: 60, y: 380, size: 180 },
-      { id: 5, x: 380, y: 380, size: 180 },
-      { id: 6, x: 700, y: 380, size: 180 },
-      { id: 7, x: 220, y: 700, size: 180 },
-      { id: 8, x: 540, y: 700, size: 180 },
-    ]);
-    setBlocks([
-      { id: 1, colorIndex: 0, x: 400, y: 50, size: 300, zIndex: 1 },
-      { id: 2, colorIndex: 1, x: 200, y: 80, size: 250, zIndex: 2 },
-      { id: 3, colorIndex: 2, x: 50, y: 200, size: 300, zIndex: 3 },
-      { id: 4, colorIndex: 3, x: 450, y: 350, size: 280, zIndex: 4 },
-      { id: 5, colorIndex: 4, x: 100, y: 450, size: 320, zIndex: 5 },
-      { id: 6, colorIndex: 5, x: 420, y: 500, size: 280, zIndex: 6 },
-    ]);
-    showToast('已恢復無重疊經典版面與色塊 🧩', 'info');
-  };
-
-  // 原生滑鼠與觸控拖曳邏輯
-  const startDrag = (e, item, target) => {
-    e.preventDefault();
-    if (target === 'windows') {
-      setSelectedWindowId(item.id);
-    } else {
-      setSelectedBlockId(item.id);
+      showToast('已隨機生成全新且不重疊的窗口！🎲', 'success');
+      render();
     }
 
-    const isTouch = e.type.startsWith('touch');
-    const startX = item.x;
-    const startY = item.y;
-    const clientX = isTouch ? e.touches[0].clientX : e.clientX;
-    const clientY = isTouch ? e.touches[0].clientY : e.clientY;
-
-    const handleMove = (moveEvent) => {
-      const curX = moveEvent.touches ? moveEvent.touches[0].clientX : moveEvent.clientX;
-      const curY = moveEvent.touches ? moveEvent.touches[0].clientY : moveEvent.clientY;
-      const dx = (curX - clientX) / (displayScale * plateToA4ScaleX);
-      const dy = (curY - clientY) / (displayScale * plateToA4ScaleY);
-
-      let newX = Math.max(0, Math.min(INTERNAL_BASE_SIZE - item.size, startX + dx));
-      let newY = Math.max(0, Math.min(INTERNAL_BASE_SIZE - item.size, startY + dy));
-
-      handleUpdateThrottled(target, item.id, {
-        x: Math.round(newX),
-        y: Math.round(newY)
-      });
-    };
-
-    const handleEnd = () => {
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleEnd);
-      window.removeEventListener('touchmove', handleMove);
-      window.removeEventListener('touchend', handleEnd);
-    };
-
-    window.addEventListener('mousemove', handleMove);
-    window.addEventListener('mouseup', handleEnd);
-    window.addEventListener('touchmove', handleMove, { passive: false });
-    window.addEventListener('touchend', handleEnd);
-  };
-
-  // 原生滑鼠與觸控等比例縮放邏輯 (正方形尺寸)
-  const startResize = (e, item, target) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const isTouch = e.type.startsWith('touch');
-    const startSize = item.size;
-    const startX = item.x;
-    const startY = item.y;
-    const clientX = isTouch ? e.touches[0].clientX : e.clientX;
-
-    const handleMove = (moveEvent) => {
-      const curX = moveEvent.touches ? moveEvent.touches[0].clientX : moveEvent.clientX;
-      const dx = (curX - clientX) / (displayScale * plateToA4ScaleX);
-
-      let newSize = Math.max(40, Math.min(600, startSize + dx));
-
-      if (startX + newSize > INTERNAL_BASE_SIZE) {
-        newSize = INTERNAL_BASE_SIZE - startX;
-      }
-      if (startY + newSize > INTERNAL_BASE_SIZE) {
-        newSize = INTERNAL_BASE_SIZE - startY;
-      }
-
-      handleUpdateThrottled(target, item.id, {
-        size: Math.round(newSize)
-      });
-    };
-
-    const handleEnd = () => {
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleEnd);
-      window.removeEventListener('touchmove', handleMove);
-      window.removeEventListener('touchend', handleEnd);
-    };
-
-    window.addEventListener('mousemove', handleMove);
-    window.addEventListener('mouseup', handleEnd);
-    window.addEventListener('touchmove', handleMove, { passive: false });
-    window.addEventListener('touchend', handleEnd);
-  };
-
-  // A4 紙面上 8 塊小卡絕對對齊座標計算系統 (自適應橫縱獨立縮放，確保卡片尺寸與鏤空窗口 1:1)
-  function getCardCoords(index, winSize) {
-    const col = index % 4;
-    const row = Math.floor(index / 4);
-    
-    const cellW = 155; 
-    const cellH = 175; 
-    
-    // 計算出該格子在 A4 上的中心點
-    const cellCenterX = START_X + col * cellW + cellW / 2;
-    const cellCenterY = START_Y + row * cellH + cellH / 2;
-    
-    // 實體拼圖卡大小根據雙向比例拉伸，維持幾何重合
-    const cardW = winSize * plateToA4ScaleX;
-    const cardH = winSize * plateToA4ScaleY;
-    
-    return {
-      x: cellCenterX - cardW / 2,
-      y: cellCenterY - cardH / 2,
-      w: cardW,
-      h: cardH
-    };
-  }
-
-  // 即時計算並渲染單個拼圖卡內部的彩色裁剪圖案 (使用 SVG 裁剪，使用 preserveAspectRatio="none" 貼合延展)
-  const renderCardPattern = (win) => {
-    const sortedBlocks = [...blocks].sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
-
-    return (
-      <svg
-        viewBox={`${win.x} ${win.y} ${win.size} ${win.size}`}
-        preserveAspectRatio="none"
-        className="w-full h-full bg-white transition-all duration-150"
-      >
-        <rect x={win.x} y={win.y} width={win.size} height={win.size} fill="#ffffff" />
-        {sortedBlocks.map((block) => {
-          const hasOverlap =
-            block.x < win.x + win.size &&
-            block.x + block.size > win.x &&
-            block.y < win.y + win.size &&
-            block.y + block.size > win.y;
-
-          if (!hasOverlap) return null;
-          return (
-            <rect
-              key={block.id}
-              x={block.x}
-              y={block.y}
-              width={block.size}
-              height={block.size}
-              fill={getThemeColor(block.colorIndex)}
-            />
-          );
-        })}
-      </svg>
-    );
-  };
-
-  // 生成並下載 1:1 對應 A4 PDF 印刷檔案 (已完全移除說明文字，增加空間，並加上設計署名)
-  const exportToA4PDF = () => {
-    if (!pdfLibLoaded || !window.jspdf) {
-      showToast('PDF 匯出工具仍在載入中，請稍候 1-2 秒再點選 📥', 'info');
-      return;
+    // 恢復預設經典版面
+    function resetLayout() {
+      state.windows = [
+        { id: 1, x: 60, y: 60, size: 180 },
+        { id: 2, x: 380, y: 60, size: 180 },
+        { id: 3, x: 700, y: 60, size: 180 },
+        { id: 4, x: 60, y: 380, size: 180 },
+        { id: 5, x: 380, y: 380, size: 180 },
+        { id: 6, x: 700, y: 380, size: 180 },
+        { id: 7, x: 220, y: 700, size: 180 },
+        { id: 8, x: 540, y: 700, size: 180 },
+      ];
+      state.blocks = [
+        { id: 1, colorIndex: 0, x: 400, y: 50, size: 300, zIndex: 1 },
+        { id: 2, colorIndex: 1, x: 200, y: 80, size: 250, zIndex: 2 },
+        { id: 3, colorIndex: 2, x: 50, y: 200, size: 300, zIndex: 3 },
+        { id: 4, colorIndex: 3, x: 450, y: 350, size: 280, zIndex: 4 },
+        { id: 5, colorIndex: 4, x: 100, y: 450, size: 320, zIndex: 5 },
+        { id: 6, colorIndex: 5, x: 420, y: 500, size: 280, zIndex: 6 },
+      ];
+      showToast('已恢復無重疊預設經典版面 🧩', 'info');
+      render();
     }
 
-    try {
-      showToast('正在產生印刷精度 A4 PDF 檔案...', 'success');
-      
-      const { jsPDF } = window.jspdf;
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const a4Coords = calculateA4Position(A4_WIDTH, A4_HEIGHT, 'p', 10);
+    // 調整圖層：往上移一層
+    function moveLayerUp(id) {
+      const currentBlock = state.blocks.find(b => b.id === id);
+      if (!currentBlock) return;
 
-      // 建立高解析度 Canvas (3x 縮放防模糊)
-      const scale = 3.0;
-      const canvas = document.createElement('canvas');
-      canvas.width = A4_WIDTH * scale;
-      canvas.height = A4_HEIGHT * scale;
-      const ctx = canvas.getContext('2d');
+      const higherBlocks = state.blocks.filter(b => b.zIndex > currentBlock.zIndex);
+      if (higherBlocks.length === 0) {
+        showToast(`色塊 ${id} 已經是最上層囉！`, 'info');
+        return;
+      }
 
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      higherBlocks.sort((a, b) => a.zIndex - b.zIndex);
+      const targetBlock = higherBlocks[0];
 
-      // 繪製 A4 頁首標題
-      ctx.fillStyle = '#111827';
-      ctx.font = `bold ${22 * scale}px "Microsoft JhengHei", "PingFang TC", sans-serif`;
-      ctx.fillText('🧩 PnP 幾何窗口益智拼圖桌遊 (印出即玩)', 50 * scale, 44 * scale);
+      const currentZ = currentBlock.zIndex;
+      const targetZ = targetBlock.zIndex;
 
-      // 繪製上方：完整的彩色方塊底座 (寬度 620px，高度 600px)
-      const px = PLATE_X * scale;
-      const py = PLATE_Y * scale;
-      const pWidth = PLATE_WIDTH_ON_A4 * scale;
-      const pHeight = PLATE_HEIGHT_ON_A4 * scale;
+      currentBlock.zIndex = targetZ;
+      targetBlock.zIndex = currentZ;
 
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(px, py, pWidth, pHeight);
-      ctx.strokeStyle = '#cbd5e1';
-      ctx.lineWidth = 2 * scale;
-      ctx.strokeRect(px, py, pWidth, pHeight);
+      showToast(`色塊 ${id} 已往上移了一層！`, 'success');
+      render();
+    }
 
-      // 依照獨立的橫縱 Scale 進行縮放並渲染底板色塊
-      const pdfPlateScaleX = pWidth / INTERNAL_BASE_SIZE;
-      const pdfPlateScaleY = pHeight / INTERNAL_BASE_SIZE;
-      const sortedBlocks = [...blocks].sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
-      sortedBlocks.forEach((block) => {
-        ctx.fillStyle = getThemeColor(block.colorIndex);
-        ctx.fillRect(
-          px + block.x * pdfPlateScaleX,
-          py + block.y * pdfPlateScaleY,
-          block.size * pdfPlateScaleX,
-          block.size * pdfPlateScaleY
-        );
+    // 調整圖層：往下移一層
+    function moveLayerDown(id) {
+      const currentBlock = state.blocks.find(b => b.id === id);
+      if (!currentBlock) return;
+
+      const lowerBlocks = state.blocks.filter(b => b.zIndex < currentBlock.zIndex);
+      if (lowerBlocks.length === 0) {
+        showToast(`色塊 ${id} 已經是最底層囉！`, 'info');
+        return;
+      }
+
+      lowerBlocks.sort((a, b) => b.zIndex - a.zIndex);
+      const targetBlock = lowerBlocks[0];
+
+      const currentZ = currentBlock.zIndex;
+      const targetZ = targetBlock.zIndex;
+
+      currentBlock.zIndex = targetZ;
+      targetBlock.zIndex = currentZ;
+
+      showToast(`色塊 ${id} 已往下移了一層！`, 'success');
+      render();
+    }
+
+    // 同步縮放 8 個窗口
+    function handleResizeAll(newSize) {
+      state.windows = state.windows.map(win => {
+        const updates = { size: newSize };
+        if (win.x + newSize > INTERNAL_BASE_SIZE) {
+          updates.x = INTERNAL_BASE_SIZE - newSize;
+        }
+        if (win.y + newSize > INTERNAL_BASE_SIZE) {
+          updates.y = INTERNAL_BASE_SIZE - newSize;
+        }
+        return { ...win, ...updates };
+      });
+      render();
+    }
+
+    // 渲染控制與自訂主題色
+    function initThemePanel() {
+      const container = document.getElementById('theme-buttons-container');
+      let html = '';
+      Object.entries(THEMES).forEach(([key, theme]) => {
+        const isActive = state.currentTheme === key;
+        const activeStyles = isActive ? 'border-indigo-500 bg-indigo-50/50 text-indigo-700 shadow-sm' : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600';
+        let circles = '';
+        theme.colors.slice(0, 5).map(c => {
+          circles += `<span class="w-2.5 h-2.5 rounded-full border border-white" style="background-color: ${c}"></span>`;
+        });
+        html += `
+          <button onclick="changeTheme('${key}')" class="p-2.5 rounded-xl border text-left transition-all flex flex-col gap-1.5 ${activeStyles}">
+            <span class="text-[11px] font-bold truncate">${theme.name.split(' ')[1]}</span>
+            <div class="flex gap-0.5">${circles}</div>
+          </button>
+        `;
       });
 
-      // 繪製彩色底板上的 8 個白色鏤空虛線框 (純淨虛線，無編號干擾)
-      ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 2 * scale;
-      ctx.setLineDash([8 * scale, 6 * scale]);
+      // 自訂色彩按鈕
+      const isCustomActive = state.currentTheme === 'custom';
+      const customStyles = isCustomActive ? 'border-indigo-500 bg-indigo-50/50 text-indigo-700 shadow-sm' : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600';
+      let customCircles = '';
+      customColors.map(c => {
+        customCircles += `<span class="w-2.5 h-2.5 rounded-full border border-white" style="background-color: ${c}"></span>`;
+      });
+      html += `
+        <button onclick="changeTheme('custom')" class="p-2.5 rounded-xl border text-left transition-all flex flex-col gap-1.5 ${customStyles}">
+          <span class="text-[11px] font-bold truncate">✨ 玩家自訂色彩</span>
+          <div class="flex gap-0.5">${customCircles}</div>
+        </button>
+      `;
 
-      windows.forEach((win) => {
-        const wx = px + win.x * pdfPlateScaleX;
-        const wy = py + win.y * pdfPlateScaleY;
-        const wWidth = win.size * pdfPlateScaleX;
-        const wHeight = win.size * pdfPlateScaleY;
+      container.innerHTML = html;
 
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(wx, wy, wWidth, wHeight);
-        ctx.strokeRect(wx, wy, wWidth, wHeight);
+      // 更新自訂色盤
+      const customPanel = document.getElementById('custom-colors-panel');
+      if (isCustomActive) {
+        customPanel.classList.remove('hidden');
+        const pickersContainer = document.getElementById('color-pickers-container');
+        let pickersHTML = '';
+        customColors.forEach((color, idx) => {
+          pickersHTML += `
+            <div class="flex flex-col items-center gap-1">
+              <input type="color" value="${color}" oninput="updateCustomColor(${idx}, this.value)" class="w-8 h-8 rounded-lg cursor-pointer border-0 shadow-sm" />
+              <span class="text-[9px] font-mono font-bold text-slate-400">色塊 ${idx + 1}</span>
+            </div>
+          `;
+        });
+        pickersContainer.innerHTML = pickersHTML;
+      } else {
+        customPanel.classList.add('hidden');
+      }
+    }
+
+    function changeTheme(themeKey) {
+      state.currentTheme = themeKey;
+      showToast(`已套用配色風格！🎨`, 'success');
+      initThemePanel();
+      render();
+    }
+
+    function updateCustomColor(idx, val) {
+      customColors[idx] = val;
+      initThemePanel();
+      render();
+    }
+
+    // 主要渲染器 (同步 DOM 與虛擬 State 狀態)
+    function render() {
+      const plate = document.getElementById('a4-plate');
+      const cardsContainer = document.getElementById('a4-cards-container');
+      const controlsPanel = document.getElementById('controls-panel');
+
+      // 1. 渲染大底座彩色色塊 (A4 底板內部)
+      let plateHTML = '';
+      const sortedBlocks = [...state.blocks].sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
+      sortedBlocks.forEach(block => {
+        const bx = block.x * plateToA4ScaleX * displayScale;
+        const by = block.y * plateToA4ScaleY * displayScale;
+        const bW = block.size * plateToA4ScaleX * displayScale;
+        const bH = block.size * plateToA4ScaleY * displayScale;
+        const isSelected = state.selectedBlockId === block.id && state.editMode === 'blocks';
+
+        plateHTML += `
+          <div class="absolute select-none transition-all duration-75 ${state.editMode === 'blocks' ? 'cursor-move' : 'pointer-events-none'}"
+               style="background-color: ${getThemeColor(block.colorIndex)}; left: ${bx}px; top: ${by}px; width: ${bW}px; height: ${bH}px; z-index: ${block.zIndex}; outline: ${isSelected ? '3px solid #6366f1' : 'none'};"
+               onmousedown="if(state.editMode === 'blocks') startDrag(event, state.blocks.find(b=>b.id===${block.id}), 'blocks')"
+               ontouchstart="if(state.editMode === 'blocks') startDrag(event, state.blocks.find(b=>b.id===${block.id}), 'blocks')">
+            
+            ${isSelected ? `
+              <div class="absolute bottom-0 right-0 w-5 h-5 bg-indigo-600 cursor-se-resize rounded-tl flex items-end justify-end pb-0.5 pr-0.5 z-[200]"
+                   onmousedown="startResize(event, state.blocks.find(b=>b.id===${block.id}), 'blocks')"
+                   ontouchstart="startResize(event, state.blocks.find(b=>b.id===${block.id}), 'blocks')">
+                <svg width="6" height="6" viewBox="0 0 6 6" fill="none"><path d="M6 0L0 6H6V0Z" fill="white" /></svg>
+              </div>
+            ` : ''}
+
+            ${state.editMode === 'blocks' ? `<div class="absolute top-1 left-1 bg-black/60 text-white font-mono text-[8px] px-1.5 py-0.5 rounded">色塊 ${block.id}</div>` : ''}
+          </div>
+        `;
       });
 
-      // 繪製中間：摺疊裁切分割虛線 (精確移動至 705 處，絕對不重疊 600px 高的底座圖案)
-      ctx.strokeStyle = '#94a3b8';
-      ctx.lineWidth = 2 * scale;
-      ctx.setLineDash([12 * scale, 8 * scale]);
-      ctx.beginPath();
-      ctx.moveTo(40 * scale, 705 * scale);
-      ctx.lineTo((A4_WIDTH - 40) * scale, 705 * scale);
-      ctx.stroke();
+      // 2. 渲染 A4 鏤空窗口 (無任何文字與編號，純淨虛線外框)
+      state.windows.forEach(win => {
+        const wx = win.x * plateToA4ScaleX * displayScale;
+        const wy = win.y * plateToA4ScaleY * displayScale;
+        const wW = win.size * plateToA4ScaleX * displayScale;
+        const wH = win.size * plateToA4ScaleY * displayScale;
+        const isSelected = state.selectedWindowId === win.id && state.editMode === 'windows';
 
-      ctx.fillStyle = '#475569';
-      ctx.font = `bold ${11 * scale}px "Microsoft JhengHei", "PingFang TC", sans-serif`;
-      ctx.fillText('✂️ 請沿這條虛線剪開：分出「上方底板」與「下方拼圖卡」', 50 * scale, 697 * scale);
+        plateHTML += `
+          <div class="absolute bg-white flex items-center justify-center border transition-all rounded-sm 
+               ${state.editMode === 'windows' ? 'cursor-move' : 'pointer-events-none opacity-40'} 
+               ${isSelected ? 'border-indigo-600 shadow-xl scale-[1.01] z-[150]' : 'border-black border-dashed z-50 hover:border-slate-800'}"
+               style="left: ${wx}px; top: ${wy}px; width: ${wW}px; height: ${wH}px; border-width: ${isSelected ? '2.5px' : '1.5px'};"
+               onmousedown="if(state.editMode === 'windows') startDrag(event, state.windows.find(w=>w.id===${win.id}), 'windows')"
+               ontouchstart="if(state.editMode === 'windows') startDrag(event, state.windows.find(w=>w.id===${win.id}), 'windows')">
+            
+            ${isSelected ? `
+              <div class="absolute bottom-0 right-0 w-4.5 h-4.5 bg-slate-800 cursor-se-resize rounded-tl-sm flex items-end justify-end pb-0.5 pr-0.5"
+                   onmousedown="startResize(event, state.windows.find(w=>w.id===${win.id}), 'windows')"
+                   ontouchstart="startResize(event, state.windows.find(w=>w.id===${win.id}), 'windows')">
+                <svg width="6" height="6" viewBox="0 0 6 6" fill="none"><path d="M6 0L0 6H6V0Z" fill="white" /></svg>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      });
 
-      // 繪製下方：8 塊完美與鏤空對齊的實體拼圖卡 (100% 乾淨無遮擋)
-      windows.forEach((win, index) => {
-        const cardCoords = getCardCoords(index, win.size);
-        const cardX = cardCoords.x * scale;
-        const cardY = cardCoords.y * scale;
-        const cardW = cardCoords.w * scale;
-        const cardH = cardCoords.h * scale;
+      plate.innerHTML = plateHTML;
 
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(cardX, cardY, cardW, cardH);
-        ctx.clip();
+      // 3. 渲染下方的 8 塊即時同步拼圖小卡 (完全乾淨，沒有黑標籤覆蓋蓋住圖案)
+      let cardsHTML = '';
+      state.windows.forEach((win, idx) => {
+        const cardCoords = getCardCoords(idx, win.size);
+        const cardX = (cardCoords.x - START_X) * displayScale;
+        const cardY = (cardCoords.y - START_Y) * displayScale;
+        const cardW = cardCoords.w * displayScale;
+        const cardH = cardCoords.h * displayScale;
+        const isSelected = state.selectedWindowId === win.id && state.editMode === 'windows';
 
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(cardX, cardY, cardW, cardH);
+        cardsHTML += `
+          <div onclick="selectWindow(${win.id})"
+               class="absolute bg-white rounded-sm border cursor-pointer overflow-hidden transition-all ${isSelected ? 'ring-4 ring-indigo-500 scale-105 shadow-xl border-indigo-500 z-50' : 'border-slate-900 shadow-md hover:border-slate-500 hover:scale-[1.02]'}"
+               style="left: ${cardX}px; top: ${cardY}px; width: ${cardW}px; height: ${cardH}px; border-width: ${isSelected ? '3px' : '2px'};">
+            <div class="w-full h-full pointer-events-none select-none">
+              ${renderCardPatternHTML(win)}
+            </div>
+          </div>
+        `;
+      });
+      cardsContainer.innerHTML = cardsHTML;
 
-        // 橫縱向拉伸縮放渲染，使拼圖卡在裁切與旋轉時精準無縫重合
-        const blockScaleX = cardW / win.size;
-        const blockScaleY = cardH / win.size;
-        const sortedBlocksForCard = [...blocks].sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
-        sortedBlocksForCard.forEach((block) => {
-          const bx = cardX + (block.x - win.x) * blockScaleX;
-          const by = cardY + (block.y - win.y) * blockScaleY;
-          const bW = block.size * blockScaleX;
-          const bH = block.size * blockScaleY;
-          ctx.fillStyle = getThemeColor(block.colorIndex);
-          ctx.fillRect(bx, by, bW, bH);
+      // 4. 渲染左側控制細微調色盤
+      renderSliders();
+      lucide.createIcons(); // 更新 lucide icons
+    }
+
+    function selectWindow(id) {
+      state.selectedWindowId = id;
+      state.editMode = 'windows';
+      setEditMode('windows');
+      render();
+    }
+
+    // 渲染微調面板 Slider 與 Layering Controls
+    function renderSliders() {
+      const container = document.getElementById('controls-panel');
+      const selectedWin = state.windows.find(w => w.id === state.selectedWindowId);
+      const selectedBlock = state.blocks.find(b => b.id === state.selectedBlockId);
+
+      if (state.editMode === 'windows') {
+        let buttons = '';
+        state.windows.forEach(w => {
+          const isActive = state.selectedWindowId === w.id;
+          buttons += `
+            <button onclick="setSelectedWindowId(${w.id})" class="py-1.5 rounded-lg font-mono text-xs font-bold border transition-all ${isActive ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}">
+              #${w.id}
+            </button>
+          `;
         });
 
-        ctx.restore();
+        container.innerHTML = `
+          <div>
+            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">🎛️ 微調當前窗口 (窗口 ${state.selectedWindowId})</h3>
+            <div class="grid grid-cols-4 gap-1.5 mb-4">${buttons}</div>
 
-        // 實線外邊框 (矩形框)
-        ctx.strokeStyle = '#1e293b';
-        ctx.lineWidth = 4 * scale;
-        ctx.setLineDash([]); 
-        ctx.strokeRect(cardX, cardY, cardW, cardH);
-      });
+            <!-- 同步調整大小 -->
+            <div class="mb-4 p-3 bg-indigo-50/50 rounded-2xl border border-indigo-100/50">
+              <div class="flex justify-between text-xs text-indigo-700 font-bold mb-1.5">
+                <span>📐 同步調整 8 個窗口尺寸</span>
+                <span class="font-mono">${state.windows[0].size} px</span>
+              </div>
+              <input type="range" min="80" max="220" value="${state.windows[0].size}" oninput="handleResizeAll(parseInt(this.value))" class="w-full accent-indigo-600" />
+            </div>
 
-      // 繪製紙本最下方的淺灰色精美設計署名 (點陣繪製防偏移)
-      ctx.fillStyle = '#cbd5e1'; 
-      ctx.font = `bold ${9 * scale}px "Microsoft JhengHei", "PingFang TC", sans-serif`;
-      ctx.fillText('設計：職能治療師 - 鄭凱文', (A4_WIDTH / 2 - 58) * scale, 1114 * scale);
+            <div class="flex flex-col gap-3">
+              <div>
+                <div class="flex justify-between text-xs text-slate-500 mb-1">
+                  <span>單獨：橫向位置 (X)</span>
+                  <span class="font-mono font-bold text-slate-700">${selectedWin.x} px</span>
+                </div>
+                <input type="range" min="0" max="${INTERNAL_BASE_SIZE - selectedWin.size}" value="${selectedWin.x}" oninput="updateSingleItem('windows', ${selectedWin.id}, {x: parseInt(this.value)})" class="w-full accent-indigo-600" />
+              </div>
+              <div>
+                <div class="flex justify-between text-xs text-slate-500 mb-1">
+                  <span>單獨：縱向位置 (Y)</span>
+                  <span className="font-mono font-bold text-slate-700">${selectedWin.y} px</span>
+                </div>
+                <input type="range" min="0" max="${INTERNAL_BASE_SIZE - selectedWin.size}" value="${selectedWin.y}" oninput="updateSingleItem('windows', ${selectedWin.id}, {y: parseInt(this.value)})" class="w-full accent-indigo-600" />
+              </div>
+              <div>
+                <div class="flex justify-between text-xs text-slate-500 mb-1">
+                  <span>單獨：裁剪尺寸 (Size)</span>
+                  <span class="font-mono font-bold text-slate-700">${selectedWin.size} px</span>
+                </div>
+                <input type="range" min="50" max="220" value="${selectedWin.size}" oninput="updateWindowSize(${selectedWin.id}, parseInt(this.value))" class="w-full accent-indigo-600" />
+              </div>
+            </div>
+          </div>
+        `;
+      } else {
+        let buttons = '';
+        state.blocks.forEach(b => {
+          const isActive = state.selectedBlockId === b.id;
+          buttons += `
+            <button onclick="setSelectedBlockId(${b.id})" class="py-1.5 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1 ${isActive ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'}">
+              <span class="w-2 h-2 rounded-full" style="background-color: ${getThemeColor(b.colorIndex)}"></span>
+              ${b.id}
+            </button>
+          `;
+        });
 
-      const imgData = canvas.toDataURL('image/jpeg', 0.98);
-      pdf.addImage(imgData, 'JPEG', a4Coords.x, a4Coords.y, a4Coords.width, a4Coords.height);
-      pdf.save('pnp_color_puzzle_kit.pdf');
-      
-      showToast('PDF 導出成功！已開始下載 🎯', 'success');
-    } catch (err) {
-      console.error(err);
-      showToast('PDF 產生過程發生錯誤，請重試', 'error');
+        // 渲染調色盤小方塊
+        let colorsListHTML = '';
+        const currentPalette = state.currentTheme === 'custom' ? customColors : THEMES[state.currentTheme].colors;
+        currentPalette.forEach((color, colorIdx) => {
+          const isSelected = selectedBlock.colorIndex === colorIdx;
+          colorsListHTML += `
+            <button onclick="updateSingleItem('blocks', ${selectedBlock.id}, {colorIndex: ${colorIdx}})" 
+                    class="w-7 h-7 rounded-full border-2 transition-transform hover:scale-110 active:scale-95 ${isSelected ? 'border-slate-800 scale-105' : 'border-white'}"
+                    style="background-color: ${color}"></button>
+          `;
+        });
+
+        container.innerHTML = `
+          <div>
+            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">🎨 微調大底座色塊 (色塊 ${state.selectedBlockId})</h3>
+            <div class="grid grid-cols-6 gap-1 mb-3">${buttons}</div>
+
+            <div class="flex gap-2 mb-4">
+              <button onclick="moveLayerUp(${selectedBlock.id})" class="flex-1 py-2 px-3 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 flex items-center justify-center gap-1 transition-all active:scale-95">🔼 往上移一層</button>
+              <button onclick="moveLayerDown(${selectedBlock.id})" class="flex-1 py-2 px-3 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 flex items-center justify-center gap-1 transition-all active:scale-95">🔽 往下移一層</button>
+            </div>
+
+            <div class="mb-4">
+              <span class="text-xs text-slate-500 block mb-1.5">修改此色塊配色：</span>
+              <div class="flex gap-2 flex-wrap">${colorsListHTML}</div>
+            </div>
+
+            <div class="flex flex-col gap-3">
+              <div>
+                <div class="flex justify-between text-xs text-slate-500 mb-1">
+                  <span>橫向位置 (X)</span>
+                  <span class="font-mono font-bold text-slate-700">${selectedBlock.x} px</span>
+                </div>
+                <input type="range" min="0" max="${INTERNAL_BASE_SIZE - selectedBlock.size}" value="${selectedBlock.x}" oninput="updateSingleItem('blocks', ${selectedBlock.id}, {x: parseInt(this.value)})" class="w-full accent-indigo-600" />
+              </div>
+              <div>
+                <div class="flex justify-between text-xs text-slate-500 mb-1">
+                  <span>縱向位置 (Y)</span>
+                  <span class="font-mono font-bold text-slate-700">${selectedBlock.y} px</span>
+                </div>
+                <input type="range" min="0" max="${INTERNAL_BASE_SIZE - selectedBlock.size}" value="${selectedBlock.y}" oninput="updateSingleItem('blocks', ${selectedBlock.id}, {y: parseInt(this.value)})" class="w-full accent-indigo-600" />
+              </div>
+              <div>
+                <div class="flex justify-between text-xs text-slate-500 mb-1">
+                  <span>正方形尺寸 (Size)</span>
+                  <span class="font-mono font-bold text-slate-700">${selectedBlock.size} px</span>
+                </div>
+                <input type="range" min="40" max="650" value="${selectedBlock.size}" oninput="updateBlockSize(${selectedBlock.id}, parseInt(this.value))" class="w-full accent-indigo-600" />
+              </div>
+            </div>
+          </div>
+        `;
+      }
     }
-  };
 
-  const selectedWin = windows.find((w) => w.id === selectedWindowId) || windows[0];
-  const selectedBlock = blocks.find((b) => b.id === selectedBlockId) || blocks[0];
+    function setSelectedWindowId(id) {
+      state.selectedWindowId = id;
+      renderSliders();
+      render();
+    }
 
-  return (
-    <div className="min-h-screen bg-slate-100 flex flex-col p-4 md:p-6 font-sans select-none overflow-x-hidden">
-      
-      <div className="flex-1 flex flex-col lg:flex-row gap-6">
-        {/* 左側：控制面板 */}
-        <aside className="w-full lg:w-[380px] flex flex-col gap-6 shrink-0">
-          <div className="bg-white p-5 rounded-3xl shadow-md border border-slate-200">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-2xl">🧩</span>
-              <h1 className="text-lg font-bold text-slate-800">PnP 幾何窗口拼圖產生器</h1>
-            </div>
-            <p className="text-xs text-slate-500 leading-relaxed">
-              這是一款符合 A4 印刷標準的益智手工桌遊設計工具。您可以在上方彩色底座自由配置底色塊與窗口位置，列印成品與設計畫面將絕對對應。
-            </p>
+    function setSelectedBlockId(id) {
+      state.selectedBlockId = id;
+      renderSliders();
+      render();
+    }
 
-            {/* 編輯模式切換 Tab */}
-            <div className="mt-4 border-t border-slate-100 pt-4">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">🕹️ 選擇編輯圖層</h3>
-              <div className="flex bg-slate-100 p-1 rounded-xl">
-                <button
-                  onClick={() => setEditMode('blocks')}
-                  className={`flex-1 py-2.5 rounded-lg text-xs font-bold transition-all ${
-                    editMode === 'blocks' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  🎨 調整底板色塊 (1-6)
-                </button>
-                <button
-                  onClick={() => setEditMode('windows')}
-                  className={`flex-1 py-2.5 rounded-lg text-xs font-bold transition-all ${
-                    editMode === 'windows' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  ✂️ 調整裁剪窗口 (1-8)
-                </button>
-              </div>
-            </div>
+    function updateSingleItem(target, id, data) {
+      if (target === 'windows') {
+        state.windows = state.windows.map(win => (win.id === id ? { ...win, ...data } : win));
+      } else {
+        state.blocks = state.blocks.map(block => (block.id === id ? { ...block, ...data } : block));
+      }
+      render();
+      renderSliders();
+    }
 
-            <div className="mt-4 flex flex-col gap-3">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">🛠️ 快速操作面板</h3>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={randomizeLayout}
-                  className="bg-slate-50 hover:bg-slate-100 border border-slate-200 active:scale-95 text-slate-700 font-semibold py-2.5 px-3 rounded-xl transition-all text-xs flex items-center justify-center gap-1.5"
-                >
-                  🎲 隨機窗口 (不重疊)
-                </button>
-                <button
-                  onClick={resetLayout}
-                  className="bg-slate-50 hover:bg-slate-100 border border-slate-200 active:scale-95 text-slate-700 font-semibold py-2.5 px-3 rounded-xl transition-all text-xs flex items-center justify-center gap-1.5"
-                >
-                  🔄 恢復經典
-                </button>
-              </div>
-              <button
-                onClick={exportToA4PDF}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold py-3 px-4 rounded-xl shadow-md shadow-indigo-100 transition-all text-xs flex items-center justify-center gap-1.5 mt-1"
-              >
-                📥 下載 A4 PDF 印刷檔案
-              </button>
-            </div>
-          </div>
+    function updateWindowSize(id, newSize) {
+      const win = state.windows.find(w => w.id === id);
+      const updates = { size: newSize };
+      if (win.x + newSize > INTERNAL_BASE_SIZE) updates.x = INTERNAL_BASE_SIZE - newSize;
+      if (win.y + newSize > INTERNAL_BASE_SIZE) updates.y = INTERNAL_BASE_SIZE - newSize;
+      updateSingleItem('windows', id, updates);
+    }
 
-          {/* 主題更換 */}
-          <div className="bg-white p-5 rounded-3xl shadow-md border border-slate-200">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">🎨 底板色彩主題</h3>
-            <div className="grid grid-cols-2 gap-2">
-              {Object.entries(THEMES).map(([key, theme]) => (
-                <button
-                  key={key}
-                  onClick={() => {
-                    setCurrentTheme(key);
-                    showToast(`已套用「${theme.name}」色彩配色！`, 'success');
-                  }}
-                  className={`p-2.5 rounded-xl border text-left transition-all flex flex-col gap-1.5 ${
-                    currentTheme === key
-                      ? 'border-indigo-500 bg-indigo-50/50 text-indigo-700 shadow-sm'
-                      : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600'
-                  }`}
-                >
-                  <span className="text-[11px] font-bold truncate">{theme.name.split(' ')[1]}</span>
-                  <div className="flex gap-0.5">
-                    {theme.colors.slice(0, 5).map((c, i) => (
-                      <span key={i} className="w-2.5 h-2.5 rounded-full border border-white" style={{ backgroundColor: c }} />
-                    ))}
-                  </div>
-                </button>
-              ))}
+    function updateBlockSize(id, newSize) {
+      const block = state.blocks.find(b => b.id === id);
+      const updates = { size: newSize };
+      if (block.x + newSize > INTERNAL_BASE_SIZE) updates.x = INTERNAL_BASE_SIZE - newSize;
+      if (block.y + newSize > INTERNAL_BASE_SIZE) updates.y = INTERNAL_BASE_SIZE - newSize;
+      updateSingleItem('blocks', id, updates);
+    }
 
-              <button
-                onClick={() => {
-                  setCurrentTheme('custom');
-                  showToast('已套用「自訂色彩主題」！🎨 可自由指定下方色調。', 'success');
-                }}
-                className={`p-2.5 rounded-xl border text-left transition-all flex flex-col gap-1.5 ${
-                  currentTheme === 'custom'
-                    ? 'border-indigo-500 bg-indigo-50/50 text-indigo-700 shadow-sm'
-                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600'
-                }`}
-              >
-                <span className="text-[11px] font-bold truncate">✨ 玩家自訂色彩</span>
-                <div className="flex gap-0.5">
-                  {customColors.map((c, i) => (
-                    <span key={i} className="w-2.5 h-2.5 rounded-full border border-white" style={{ backgroundColor: c }} />
-                  ))}
-                </div>
-              </button>
-            </div>
+    // high-fidelity A4 置中排版演算法與 PDF 導出
+    function calculateA4Position(targetWidth, targetHeight, orientation = 'p', margin = 10) {
+      const isLand = orientation === 'l';
+      const pageWidth = isLand ? 297 : 210;
+      const pageHeight = isLand ? 210 : 297;
+      const contentWidth = pageWidth - margin * 2;
+      const contentHeight = pageHeight - margin * 2;
+      const ratio = targetWidth / targetHeight;
+      let drawW, drawH;
 
-            {currentTheme === 'custom' && (
-              <div className="mt-3 p-3 bg-slate-50 rounded-2xl border border-slate-100 flex flex-col gap-2">
-                <span className="text-[11px] font-bold text-slate-500 block">🎨 自訂 6 塊底板色塊顏色：</span>
-                <div className="grid grid-cols-3 gap-2">
-                  {customColors.map((color, idx) => (
-                    <div key={idx} className="flex flex-col items-center gap-1">
-                      <input
-                        type="color"
-                        value={color}
-                        onChange={(e) => {
-                          const next = [...customColors];
-                          next[idx] = e.target.value;
-                          setCustomColors(next);
-                        }}
-                        className="w-8 h-8 rounded-lg cursor-pointer border-0 shadow-sm"
-                      />
-                      <span className="text-[9px] font-mono font-bold text-slate-400">色塊 {idx + 1}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+      if (ratio > contentWidth / contentHeight) {
+        drawW = contentWidth;
+        drawH = contentWidth / ratio;
+      } else {
+        drawH = contentHeight;
+        drawW = drawH * ratio;
+      }
+      return {
+        x: (pageWidth - drawW) / 2,
+        y: (pageHeight - drawH) / 2,
+        width: drawW,
+        height: drawH,
+      };
+    }
 
-          {/* 編輯控制面板 */}
-          <div className="bg-white p-5 rounded-3xl shadow-md border border-slate-200">
-            {editMode === 'windows' ? (
-              <div>
-                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-                  🎛️ 微調當前窗口 (窗口 {selectedWindowId})
-                </h3>
-                
-                <div className="grid grid-cols-4 gap-1.5 mb-4">
-                  {windows.map((w) => (
-                    <button
-                      key={w.id}
-                      onClick={() => setSelectedWindowId(w.id)}
-                      className={`py-1.5 rounded-lg font-mono text-xs font-bold border transition-all ${
-                        selectedWindowId === w.id
-                          ? 'bg-indigo-600 border-indigo-600 text-white shadow-md'
-                          : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                      }`}
-                    >
-                      #{w.id}
-                    </button>
-                  ))}
-                </div>
+    function exportToA4PDF() {
+      if (!window.jspdf) {
+        showToast('PDF 匯出模組仍在加載中，請稍候 1-2 秒再點選 📥', 'info');
+        return;
+      }
 
-                {/* 一鍵同步調整 8 個窗口尺寸 */}
-                <div className="mb-4 p-3 bg-indigo-50/50 rounded-2xl border border-indigo-100/50">
-                  <div className="flex justify-between text-xs text-indigo-700 font-bold mb-1.5">
-                    <span>📐 同步調整 8 個窗口尺寸</span>
-                    <span className="font-mono">{windows[0].size} px</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="80"
-                    max="220"
-                    value={windows[0].size}
-                    onChange={(e) => handleResizeAll(parseInt(e.target.value))}
-                    className="w-full accent-indigo-600"
-                  />
-                </div>
+      try {
+        showToast('正在產生高解析度 A4 PDF 印刷檔案...', 'success');
+        
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF('p', 'mm', 'a4');
+        const a4Coords = calculateA4Position(A4_WIDTH, A4_HEIGHT, 'p', 10);
 
-                <div className="flex flex-col gap-3">
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-500 mb-1">
-                      <span>單獨：橫向位置 (X)</span>
-                      <span className="font-mono font-bold text-slate-700">{selectedWin.x} px</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max={INTERNAL_BASE_SIZE - selectedWin.size}
-                      value={selectedWin.x}
-                      onChange={(e) => handleUpdateThrottled('windows', selectedWindowId, { x: parseInt(e.target.value) })}
-                      className="w-full accent-indigo-600"
-                    />
-                  </div>
+        // 建立高清晰 Canvas (3x 縮放確保邊界銳利不模糊)
+        const scale = 3.0;
+        const canvas = document.createElement('canvas');
+        canvas.width = A4_WIDTH * scale;
+        canvas.height = A4_HEIGHT * scale;
+        const ctx = canvas.getContext('2d');
 
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-500 mb-1">
-                      <span>單獨：縱向位置 (Y)</span>
-                      <span className="font-mono font-bold text-slate-700">{selectedWin.y} px</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max={INTERNAL_BASE_SIZE - selectedWin.size}
-                      value={selectedWin.y}
-                      onChange={(e) => handleUpdateThrottled('windows', selectedWindowId, { y: parseInt(e.target.value) })}
-                      className="w-full accent-indigo-600"
-                    />
-                  </div>
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-500 mb-1">
-                      <span>單獨：裁剪尺寸 (Size)</span>
-                      <span className="font-mono font-bold text-slate-700">{selectedWin.size} px</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="50"
-                      max="220"
-                      value={selectedWin.size}
-                      onChange={(e) => {
-                        const size = parseInt(e.target.value);
-                        const updates = { size };
-                        if (selectedWin.x + size > INTERNAL_BASE_SIZE) updates.x = INTERNAL_BASE_SIZE - size;
-                        if (selectedWin.y + size > INTERNAL_BASE_SIZE) updates.y = INTERNAL_BASE_SIZE - size;
-                        handleUpdateThrottled('windows', selectedWindowId, updates);
-                      }}
-                      className="w-full accent-indigo-600"
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div>
-                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-                  🎨 微調大底座色塊 (色塊 {selectedBlockId})
-                </h3>
+        // 1. 繪製 A4 頁首標題 (已移除說明文字)
+        ctx.fillStyle = '#111827';
+        ctx.font = `bold ${22 * scale}px "Microsoft JhengHei", "PingFang TC", sans-serif`;
+        ctx.fillText('🧩 PnP 幾何窗口益智拼圖桌遊 (印出即玩)', 50 * scale, 44 * scale);
 
-                <div className="grid grid-cols-6 gap-1 mb-3">
-                  {blocks.map((b) => (
-                    <button
-                      key={b.id}
-                      onClick={() => setSelectedBlockId(b.id)}
-                      className={`py-1.5 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1 ${
-                        selectedBlockId === b.id
-                          ? 'bg-indigo-600 border-indigo-600 text-white shadow-md'
-                          : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                      }`}
-                    >
-                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: getThemeColor(b.colorIndex) }} />
-                      {b.id}
-                    </button>
-                  ))}
-                </div>
+        // 2. 繪製上方彩色底座 (620x600 比例)
+        const px = PLATE_X * scale;
+        const py = PLATE_Y * scale;
+        const pWidth = PLATE_WIDTH_ON_A4 * scale;
+        const pHeight = PLATE_HEIGHT_ON_A4 * scale;
 
-                <div className="flex gap-2 mb-4">
-                  <button
-                    onClick={() => moveLayerUp(selectedBlockId)}
-                    className="flex-1 py-2 px-3 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 flex items-center justify-center gap-1 transition-all active:scale-95"
-                  >
-                    🔼 往上移一層
-                  </button>
-                  <button
-                    onClick={() => moveLayerDown(selectedBlockId)}
-                    className="flex-1 py-2 px-3 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 flex items-center justify-center gap-1 transition-all active:scale-95"
-                  >
-                    🔽 往下移一層
-                  </button>
-                </div>
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(px, py, pWidth, pHeight);
+        ctx.strokeStyle = '#cbd5e1';
+        ctx.lineWidth = 2 * scale;
+        ctx.strokeRect(px, py, pWidth, pHeight);
 
-                <div className="mb-4">
-                  <span className="text-xs text-slate-500 block mb-1.5">修改此色塊配色：</span>
-                  <div className="flex gap-2 flex-wrap">
-                    {(currentTheme === 'custom' ? customColors : THEMES[currentTheme].colors).map((color, colorIdx) => (
-                      <button
-                        key={colorIdx}
-                        onClick={() => {
-                          handleUpdateThrottled('blocks', selectedBlockId, { colorIndex: colorIdx });
-                          showToast(`色塊 ${selectedBlockId} 已更換顏色！`, 'success');
-                        }}
-                        className={`w-7 h-7 rounded-full border-2 transition-transform hover:scale-110 active:scale-95 ${
-                          selectedBlock.colorIndex === colorIdx ? 'border-slate-800 scale-105' : 'border-white'
-                        }`}
-                        style={{ backgroundColor: color }}
-                      />
-                    ))}
-                  </div>
-                </div>
+        // 繪製彩色大正方形
+        const pdfPlateScaleX = pWidth / INTERNAL_BASE_SIZE;
+        const pdfPlateScaleY = pHeight / INTERNAL_BASE_SIZE;
+        const sortedBlocks = [...state.blocks].sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
+        sortedBlocks.forEach(block => {
+          ctx.fillStyle = getThemeColor(block.colorIndex);
+          ctx.fillRect(
+            px + block.x * pdfPlateScaleX,
+            py + block.y * pdfPlateScaleY,
+            block.size * pdfPlateScaleX,
+            block.size * pdfPlateScaleY
+          );
+        });
 
-                <div className="flex flex-col gap-3">
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-500 mb-1">
-                      <span>橫向位置 (X)</span>
-                      <span className="font-mono font-bold text-slate-700">{selectedBlock.x} px</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max={INTERNAL_BASE_SIZE - selectedBlock.size}
-                      value={selectedBlock.x}
-                      onChange={(e) => handleUpdateThrottled('blocks', selectedBlockId, { x: parseInt(e.target.value) })}
-                      className="w-full accent-indigo-600"
-                    />
-                  </div>
+        // 繪製 8 個白色鏤空虛線框 (純淨虛線，無編號干擾)
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2 * scale;
+        ctx.setLineDash([8 * scale, 6 * scale]);
 
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-500 mb-1">
-                      <span>縱向位置 (Y)</span>
-                      <span className="font-mono font-bold text-slate-700">{selectedBlock.y} px</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max={INTERNAL_BASE_SIZE - selectedBlock.size}
-                      value={selectedBlock.y}
-                      onChange={(e) => handleUpdateThrottled('blocks', selectedBlockId, { y: parseInt(e.target.value) })}
-                      className="w-full accent-indigo-600"
-                    />
-                  </div>
+        state.windows.forEach(win => {
+          const wx = px + win.x * pdfPlateScaleX;
+          const wy = py + win.y * pdfPlateScaleY;
+          const wWidth = win.size * pdfPlateScaleX;
+          const wHeight = win.size * pdfPlateScaleY;
 
-                  <div>
-                    <div className="flex justify-between text-xs text-slate-500 mb-1">
-                      <span>正方形尺寸 (Size)</span>
-                      <span className="font-mono font-bold text-slate-700">{selectedBlock.size} px</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="40"
-                      max="650"
-                      value={selectedBlock.size}
-                      onChange={(e) => {
-                        const size = parseInt(e.target.value);
-                        const updates = { size };
-                        if (selectedBlock.x + size > INTERNAL_BASE_SIZE) updates.x = INTERNAL_BASE_SIZE - size;
-                        if (selectedBlock.y + size > INTERNAL_BASE_SIZE) updates.y = INTERNAL_BASE_SIZE - size;
-                        handleUpdateThrottled('blocks', selectedBlockId, updates);
-                      }}
-                      className="w-full accent-indigo-600"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </aside>
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(wx, wy, wWidth, wHeight);
+          ctx.strokeRect(wx, wy, wWidth, wHeight);
+        });
 
-        {/* 右側：A4 格式預覽區 */}
-        <section className="flex-1 flex flex-col items-center">
-          <div className="mb-3 flex items-center gap-1.5 self-start lg:self-center text-xs font-semibold text-slate-500">
-            <span className="inline-block w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse" />
-            <span>A4 實體列印排版預覽 ({editMode === 'blocks' ? '當前正拖動彩色底座色塊' : '當前正編輯剪裁窗口'})</span>
-          </div>
+        // 3. 繪製中間：摺疊裁切分割虛線 (精確移動至 705 處，絕對不重疊)
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth = 2 * scale;
+        ctx.setLineDash([12 * scale, 8 * scale]);
+        ctx.beginPath();
+        ctx.moveTo(40 * scale, 705 * scale);
+        ctx.lineTo((A4_WIDTH - 40) * scale, 705 * scale);
+        ctx.stroke();
 
-          {/* 虛擬 A4 紙張本體 */}
-          <div
-            ref={containerRef}
-            className="relative w-full max-w-[640px] bg-white rounded-2xl shadow-xl border border-slate-300 overflow-hidden aspect-[210/297] select-none"
-            style={{ touchAction: 'none' }}
-          >
-            {/* 遊戲標題名稱 (已簡化挪出大量可用空間) */}
-            <div
-              className="absolute left-0 right-0 p-5 select-none pointer-events-none"
-              style={{
-                top: 0,
-                transform: `scale(${displayScale})`,
-                transformOrigin: 'top left',
-                width: `${A4_WIDTH}px`
-              }}
-            >
-              <h2 className="text-xl font-black text-slate-900 tracking-tight">🧩 PnP 幾何窗口益智拼圖桌遊 (印出即玩)</h2>
-            </div>
+        ctx.fillStyle = '#475569';
+        ctx.font = `bold ${11 * scale}px "Microsoft JhengHei", "PingFang TC", sans-serif`;
+        ctx.fillText('✂️ 請沿這條虛線剪開：分出「上方底板」與「下方拼圖卡」', 50 * scale, 697 * scale);
 
-            {/* 彩色底板主要編輯區域 (已由原來的 600x600 拓展至 620x600，橫向空間發揮更好) */}
-            <div
-              className="absolute bg-white border border-slate-200 select-none overflow-hidden animate-fade-in"
-              style={{
-                left: `${PLATE_X * displayScale}px`,
-                top: `${PLATE_Y * displayScale}px`,
-                width: `${PLATE_WIDTH_ON_A4 * displayScale}px`,
-                height: `${PLATE_HEIGHT_ON_A4 * displayScale}px`,
-              }}
-            >
-              {/* 1. 渲染色彩幾何大色塊 (依 zIndex 獨立橫縱比例縮放排列) */}
-              {[...blocks]
-                .sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0))
-                .map((block) => {
-                  const bx = block.x * plateToA4ScaleX * displayScale;
-                  const by = block.y * plateToA4ScaleY * displayScale;
-                  const bW = block.size * plateToA4ScaleX * displayScale;
-                  const bH = block.size * plateToA4ScaleY * displayScale;
-                  const isSelectedBlock = selectedBlockId === block.id && editMode === 'blocks';
+        // 4. 繪製下方：8 塊完美與鏤空對齊的實體拼圖卡 (100% 乾淨無遮擋)
+        state.windows.forEach((win, index) => {
+          const cardCoords = getCardCoords(index, win.size);
+          const cardX = cardCoords.x * scale;
+          const cardY = cardCoords.y * scale;
+          const cardW = cardCoords.w * scale;
+          const cardH = cardCoords.h * scale;
 
-                  return (
-                    <div
-                      key={block.id}
-                      className={`absolute select-none transition-all duration-75 ${
-                        editMode === 'blocks' ? 'cursor-move active:scale-98 shadow-sm' : 'pointer-events-none'
-                      }`}
-                      style={{
-                        backgroundColor: getThemeColor(block.colorIndex),
-                        left: `${bx}px`,
-                        top: `${by}px`,
-                        width: `${bW}px`,
-                        height: `${bH}px`,
-                        zIndex: block.zIndex,
-                        outline: isSelectedBlock ? '3px solid #6366f1' : 'none',
-                        boxShadow: isSelectedBlock ? '0 10px 15px -3px rgba(0, 0, 0, 0.4)' : 'none',
-                      }}
-                      onMouseDown={(e) => editMode === 'blocks' && startDrag(e, block, 'blocks')}
-                      onTouchStart={(e) => editMode === 'blocks' && startDrag(e, block, 'blocks')}
-                    >
-                      {/* 縮放把手 */}
-                      {isSelectedBlock && (
-                        <div
-                          className="absolute bottom-0 right-0 w-5 h-5 bg-indigo-600 cursor-se-resize rounded-tl flex items-end justify-end pb-0.5 pr-0.5 z-[200]"
-                          onMouseDown={(e) => startResize(e, block, 'blocks')}
-                          onTouchStart={(e) => startResize(e, block, 'blocks')}
-                        >
-                          <svg width="6" height="6" viewBox="0 0 6 6" fill="none">
-                            <path d="M6 0L0 6H6V0Z" fill="white" />
-                          </svg>
-                        </div>
-                      )}
-                      {editMode === 'blocks' && (
-                        <div className="absolute top-1 left-1 bg-black/60 text-white font-mono text-[8px] px-1.5 py-0.5 rounded">
-                          色塊 {block.id}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(cardX, cardY, cardW, cardH);
+          ctx.clip();
 
-              {/* 2. 渲染底板上的 8 個可拖動、可縮放白底鏤空窗口 (純淨虛線，無多餘編號與文字) */}
-              {windows.map((win, idx) => {
-                const wx = win.x * plateToA4ScaleX * displayScale;
-                const wy = win.y * plateToA4ScaleY * displayScale;
-                const wW = win.size * plateToA4ScaleX * displayScale;
-                const wH = win.size * plateToA4ScaleY * displayScale;
-                const isSelectedWin = selectedWindowId === win.id && editMode === 'windows';
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(cardX, cardY, cardW, cardH);
 
-                return (
-                  <div
-                    key={win.id}
-                    className={`absolute bg-white flex items-center justify-center border transition-all rounded-sm ${
-                      editMode === 'windows' ? 'cursor-move' : 'pointer-events-none opacity-40'
-                    } ${
-                      isSelectedWin
-                        ? 'border-indigo-600 shadow-xl scale-[1.01] z-[150]'
-                        : 'border-black border-dashed z-50 hover:border-slate-800'
-                    }`}
-                    style={{
-                      left: `${wx}px`,
-                      top: `${wy}px`,
-                      width: `${wW}px`,
-                      height: `${wH}px`,
-                      borderWidth: isSelectedWin ? '2.5px' : '1.5px',
-                    }}
-                    onMouseDown={(e) => editMode === 'windows' && startDrag(e, win, 'windows')}
-                    onTouchStart={(e) => editMode === 'windows' && startDrag(e, win, 'windows')}
-                  >
-                    {/* 縮放把手 */}
-                    {isSelectedWin && (
-                      <div
-                        className="absolute bottom-0 right-0 w-4.5 h-4.5 bg-slate-800 cursor-se-resize rounded-tl-sm flex items-end justify-end pb-0.5 pr-0.5"
-                        onMouseDown={(e) => startResize(e, win, 'windows')}
-                        onTouchStart={(e) => startResize(e, win, 'windows')}
-                      >
-                        <svg width="6" height="6" viewBox="0 0 6 6" fill="none" className="pointer-events-none">
-                          <path d="M6 0L0 6H6V0Z" fill="white" />
-                        </svg>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+          // 橫縱向自適應拉伸縮放渲染
+          const blockScaleX = cardW / win.size;
+          const blockScaleY = cardH / win.size;
+          const sortedBlocksForCard = [...state.blocks].sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
+          sortedBlocksForCard.forEach(block => {
+            const bx = cardX + (block.x - win.x) * blockScaleX;
+            const by = cardY + (block.y - win.y) * blockScaleY;
+            const bW = block.size * blockScaleX;
+            const bH = block.size * blockScaleY;
+            ctx.fillStyle = getThemeColor(block.colorIndex);
+            ctx.fillRect(bx, by, bW, bH);
+          });
 
-            {/* 中間的 A4 裁剪引導虛線 (精確移動至 705 處，絕對不重疊底板，避免文字被覆蓋) */}
-            <div
-              className="absolute left-0 right-0 border-t-2 border-dashed border-slate-400 flex items-center px-8"
-              style={{
-                top: `${705 * displayScale}px`,
-                height: '1px'
-              }}
-            >
-              <span
-                className="bg-white px-2 text-slate-500 font-bold select-none pointer-events-none"
-                style={{
-                  fontSize: `${9 * displayScale}px`,
-                  transform: 'translateY(-50%)'
-                }}
-              >
-                ✂️ 請沿這條虛線剪開：分出「上方底板」與「下方拼圖卡」
-              </span>
-            </div>
+          ctx.restore();
 
-            {/* 下方：8 塊即時裁剪拼圖卡本體 (無黑字遮擋、100% 完整色塊) */}
-            <div
-              className="absolute"
-              style={{
-                left: `${START_X * displayScale}px`,
-                top: `${START_Y * displayScale}px`,
-                width: `${(A4_WIDTH - START_X * 2) * displayScale}px`,
-                height: `${400 * displayScale}px`
-              }}
-            >
-              {windows.map((win, idx) => {
-                const cardCoords = getCardCoords(idx, win.size);
-                const cardX = (cardCoords.x - START_X) * displayScale;
-                const cardY = (cardCoords.y - START_Y) * displayScale;
-                const cardW = cardCoords.w * displayScale;
-                const cardH = cardCoords.h * displayScale;
-                const isSelected = selectedWindowId === win.id && editMode === 'windows';
+          // 實線外邊框 (代表剪刀裁剪線)
+          ctx.strokeStyle = '#1e293b';
+          ctx.lineWidth = 4 * scale;
+          ctx.setLineDash([]); 
+          ctx.strokeRect(cardX, cardY, cardW, cardH);
+        });
 
-                return (
-                  <div
-                    key={win.id}
-                    onClick={() => {
-                      setSelectedWindowId(win.id);
-                      setEditMode('windows');
-                    }}
-                    className={`absolute bg-white rounded-sm border cursor-pointer overflow-hidden transition-all ${
-                      isSelected
-                        ? 'ring-4 ring-indigo-500 scale-105 shadow-xl border-indigo-500 z-50'
-                        : 'border-slate-900 shadow-md hover:border-slate-500 hover:scale-[1.02]'
-                    }`}
-                    style={{
-                      left: `${cardX}px`,
-                      top: `${cardY}px`,
-                      width: `${cardW}px`,
-                      height: `${cardH}px`,
-                      borderWidth: isSelected ? '3px' : '2px', 
-                    }}
-                  >
-                    <div className="w-full h-full pointer-events-none select-none">
-                      {renderCardPattern(win)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+        // 繪製最下方淺灰色設計署名 (點陣繪製防偏移)
+        ctx.fillStyle = '#cbd5e1'; 
+        ctx.font = `bold ${9 * scale}px "Microsoft JhengHei", "PingFang TC", sans-serif`;
+        ctx.fillText('設計：職能治療師 - 鄭凱文', (A4_WIDTH / 2 - 58) * scale, 1114 * scale);
 
-            {/* A4 紙本最下方的淺灰色精美設計署名 */}
-            <div
-              className="absolute bottom-4 left-0 right-0 text-center text-slate-300 font-bold pointer-events-none select-none"
-              style={{
-                fontSize: `${10 * displayScale}px`,
-              }}
-            >
-              設計：職能治療師 - 鄭凱文
-            </div>
+        const imgData = canvas.toDataURL('image/jpeg', 0.98);
+        pdf.addImage(imgData, 'JPEG', a4Coords.x, a4Coords.y, a4Coords.width, a4Coords.height);
+        pdf.save('pnp_color_puzzle_kit.pdf');
+        
+        showToast('PDF 導出成功！已開始下載 🎯', 'success');
+      } catch (err) {
+        console.error(err);
+        showToast('PDF 產生過程發生錯誤，請重試', 'error');
+      }
+    }
 
-          </div>
-        </section>
-      </div>
-
-      {/* 網頁最下面的設計師頁尾 */}
-      <footer className="w-full text-center py-6 mt-8 border-t border-slate-200 text-sm text-slate-500">
-        設計：
-        <a
-          href="https://www.facebook.com/mpotkevin"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-indigo-600 font-semibold hover:underline"
-        >
-          職能治療師 - 鄭凱文
-        </a>
-      </footer>
-
-    </div>
-  );
-}
+    // 初始化網頁與監聽事件
+    window.onload = function () {
+      initThemePanel();
+      updateDisplayScale();
+      window.addEventListener('resize', updateDisplayScale);
+    }
+  </script>
+</body>
+</html>
